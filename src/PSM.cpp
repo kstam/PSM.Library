@@ -2,29 +2,16 @@
 
 PSM* _thePSM;
 
-PSM::PSM(unsigned char sensePin, unsigned char controlPin, unsigned int range, int mode, unsigned char divider, unsigned char interruptMinTimeDiff) {
+PSM::PSM(uint8_t sensePin, int mode, uint8_t interruptMinTimeDiff) : _sensePin(sensePin), _interruptMinTimeDiff(interruptMinTimeDiff) {
   _thePSM = this;
 
   pinMode(sensePin, INPUT_PULLUP);
-  PSM::_sensePin = sensePin;
-
-  pinMode(controlPin, OUTPUT);
-  PSM::_controlPin = controlPin;
-
-  PSM::_divider = divider > 0 ? divider : 1;
 
   uint32_t interruptNum = digitalPinToInterrupt(PSM::_sensePin);
-
   if (interruptNum != NOT_AN_INTERRUPT) {
     attachInterrupt(interruptNum, onZCInterrupt, mode);
   }
-
-  PSM::_range = range;
-  PSM::_interruptMinTimeDiff = interruptMinTimeDiff;
 }
-
-void onPSMInterrupt() __attribute__((weak));
-void onPSMInterrupt() {}
 
 void PSM::onZCInterrupt(void) {
   if (_thePSM->_interruptMinTimeDiff > 0 && millis() - _thePSM->_interruptMinTimeDiff < _thePSM->_lastMillis) {
@@ -34,8 +21,6 @@ void PSM::onZCInterrupt(void) {
   }
 
   _thePSM->_lastMillis = millis();
-
-  onPSMInterrupt();
 
   _thePSM->calculateSkipFromZC();
 
@@ -47,118 +32,53 @@ void PSM::onZCInterrupt(void) {
 
 void PSM::onPSMTimerInterrupt(void) {
   _thePSM->_psmIntervalTimer->pause();
-  _thePSM->updateControl(true);
-}
-
-void PSM::set(unsigned int value) {
-  if (value < PSM::_range) {
-    PSM::_value = value;
-  }
-  else {
-    PSM::_value = PSM::_range;
-  }
-}
-
-long PSM::getCounter(void) {
-  return PSM::_counter;
-}
-
-void PSM::resetCounter(void) {
-  PSM::_counter = 0;
-}
-
-void PSM::stopAfter(long counter) {
-  PSM::_stopAfter = counter;
+  _thePSM->updateControls(true);
 }
 
 void PSM::calculateSkipFromZC(void) {
-  if (_thePSM->_dividerCounter >= _thePSM->_divider - 1) {
-    _thePSM->_dividerCounter -= _thePSM->_divider - 1;
-    _thePSM->calculateSkip();
-  }
-  else {
-    _thePSM->_dividerCounter++;
-  }
-  _thePSM->updateControl(false);
+  _thePSM->calculateSkipForControls();
+  _thePSM->updateControls(false);
 }
 
-void PSM::calculateSkip(void) {
-  PSM::_a += PSM::_value;
-
-  if (PSM::_a >= PSM::_range) {
-    PSM::_a -= PSM::_range;
-    PSM::_skip = false;
-  }
-  else {
-    PSM::_skip = true;
-  }
-
-  if (PSM::_a > PSM::_range) {
-    PSM::_a = 0;
-    PSM::_skip = false;
-  }
-
-  if (!PSM::_skip) {
-    PSM::_counter++;
-  }
-
-  if (!PSM::_skip
-    && PSM::_stopAfter > 0
-    && PSM::_counter > PSM::_stopAfter) {
-    PSM::_skip = true;
+void PSM::calculateSkipForControls(void) {
+  for (auto* control : _thePSM->_controls) {
+    control->calculateSkip();
   }
 }
 
-void PSM::updateControl(bool forceDisable) {
-  if (forceDisable || PSM::_skip) {
-    digitalWrite(PSM::_controlPin, LOW);
-  }
-  else {
-    digitalWrite(PSM::_controlPin, HIGH);
+void PSM::updateControls(bool forceDisable) {
+  for (auto* control : _thePSM->_controls) {
+    control->updateControl(forceDisable);
   }
 }
 
-unsigned int PSM::cps(void) {
-  unsigned int range = PSM::_range;
-  unsigned int value = PSM::_value;
-  unsigned char divider = PSM::_divider;
+// We just use this to count the ZC frequency
+class PsmDummyControl : public PsmControlBase
+{
+public:
+  uint32_t counter = 0;
+  PsmDummyControl() {}
+  void calculateSkip() override { counter++; }
+  void updateControl(bool forceDisable = false) override {}
+};
 
-  PSM::_range = 0xFFFF;
-  PSM::_value = 1;
-  PSM::_a = 0;
-  PSM::_divider = 1;
-  PSM::_skip = true;
+uint16_t PSM::getFrequency(void) {
+  std::vector<PsmControlBase*> controlsBackup = _controls;
 
-  unsigned long stopAt = millis() + 1000;
+  auto* dummyControl = new PsmDummyControl();
+  _controls = { dummyControl };// TODO don't define output for random pin
+
+  uint32_t stopAt = millis() + 1000;
 
   while (millis() < stopAt) {
     delay(0);
   }
 
-  unsigned int result = PSM::_a;
-
-  PSM::_range = range;
-  PSM::_value = value;
-  PSM::_a = 0;
-  PSM::_divider = divider;
-
+  uint16_t result = dummyControl->counter;
+  _controls = controlsBackup;
+  
+  delete dummyControl;
   return result;
-}
-
-unsigned long PSM::getLastMillis(void) {
-  return PSM::_lastMillis;
-}
-
-unsigned char PSM::getDivider(void) {
-  return PSM::_divider;
-}
-
-void PSM::setDivider(unsigned char divider) {
-  PSM::_divider = divider > 0 ? divider : 1;
-}
-
-void PSM::shiftDividerCounter(char value) {
-  PSM::_dividerCounter += value;
 }
 
 void PSM::initTimer(uint16_t delay, TIM_TypeDef* timerInstance) {
@@ -170,4 +90,61 @@ void PSM::initTimer(uint16_t delay, TIM_TypeDef* timerInstance) {
   PSM::_psmIntervalTimer->attachInterrupt(onPSMTimerInterrupt);
 
   PSM::_psmIntervalTimerInitialized = true;
+}
+
+// PSMControl
+// One per pin where we apply PSM. 
+// Example: One for the pump, one for the heater, etc.
+
+PsmPinControl::PsmPinControl(uint8_t controlPin, uint16_t range, uint8_t divider) : _controlPin(controlPin), _range(range), _divider(divider) {
+  pinMode(_controlPin, OUTPUT);
+  digitalWrite(_controlPin, LOW);
+  _a = 0;
+}
+
+uint32_t PsmPinControl::getCounter() { return _counter; }
+void PsmPinControl::resetCounter() { _counter = 0; }
+void PsmPinControl::setValue(uint16_t value) { _value = (value < _range) ? value : _range; }
+void PsmPinControl::setDivider(uint8_t divider) { _divider = divider; }
+
+void PsmPinControl::calculateSkip(void) {
+  if (_dividerCounter < _divider - 1) {
+    _dividerCounter++;
+    return;
+  }
+  _dividerCounter -= _divider - 1;
+
+  _a += _value;
+
+  if (_a >= _range) {
+    _a -= _range;
+    _skip = false;
+  }
+  else {
+    _skip = true;
+  }
+
+  if (_a > _range) {
+    _a = 0;
+    _skip = false;
+  }
+
+  if (!_skip) {
+    _counter++;
+  }
+
+  if (!_skip
+    && _stopAfter > 0
+    && _counter > _stopAfter) {
+    _skip = true;
+  }
+}
+
+void PsmPinControl::updateControl(bool forceDisable) {
+  if (forceDisable || _skip) {
+    digitalWrite(_controlPin, LOW);
+  }
+  else {
+    digitalWrite(_controlPin, HIGH);
+  }
 }

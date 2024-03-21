@@ -1,49 +1,72 @@
 #ifndef PSM_h
 #define PSM_h
 
+#include "cstdint"
+#include "vector"
 #include "Arduino.h"
+
+
+class PsmControlBase
+{
+public:
+  virtual void calculateSkip() = 0;
+  virtual void updateControl(bool forceDisable = false) = 0;
+};
+
+class PsmPinControl : public PsmControlBase
+{
+public:
+  PsmPinControl(uint8_t controlPin, uint16_t range, uint8_t divider = 1);
+  uint32_t getCounter();
+  void resetCounter();
+  void setValue(uint16_t value);
+  void setDivider(uint8_t divider);
+
+  void calculateSkip() override;
+  void updateControl(bool forceDisable = false) override;
+
+private:
+  uint8_t _controlPin;
+  uint16_t _value;
+  uint16_t _range;
+  uint32_t _stopAfter;
+
+  uint8_t _divider;
+  uint8_t _dividerCounter = 1;
+
+  uint16_t _a = 0;
+  uint32_t _counter = 0;
+  bool _skip = true;
+};
 
 class PSM
 {
 public:
-  PSM(unsigned char sensePin, unsigned char controlPin, unsigned int range, int mode = RISING, unsigned char divider = 1, unsigned char interruptMinTimeDiff = 0);
-
+  PSM(uint8_t sensePin, int mode = RISING, uint8_t interruptMinTimeDiff = 0);
   void initTimer(uint16_t delay, TIM_TypeDef* timerInstance = TIM1);
-
-  void set(unsigned int value);
-
-  long getCounter(void);
-  void resetCounter(void);
-
-  void stopAfter(long counter);
-
-  unsigned int cps(void);
-  unsigned long getLastMillis(void);
-
-  unsigned char getDivider(void);
-  void setDivider(unsigned char divider = 1);
-  void shiftDividerCounter(char value = 1);
+  uint16_t getFrequency(void);
+  void addControl(PsmControlBase* control) {
+    // Check if control pointer is already in the vector and ignore
+    for (auto* c : _controls) {
+      if (c == control) {
+        return;
+      }
+    }
+    _controls.push_back(control);
+  }
 
 private:
+  std::vector<PsmControlBase*> _controls;
+
   static inline void onZCInterrupt(void);
   static inline void calculateSkipFromZC(void);
   static inline void onPSMTimerInterrupt(void);
-  void calculateSkip(void);
-  void updateControl(bool forceDisable = true);
+  void calculateSkipForControls(void);
+  void updateControls(bool forceDisable = true);
 
   unsigned char _sensePin;
-  unsigned char _controlPin;
-  unsigned int _range;
-  unsigned char _divider = 1;
-  unsigned char _dividerCounter = 1;
   unsigned char _interruptMinTimeDiff;
-  volatile unsigned int _value;
-  volatile unsigned int _a;
-  volatile bool _skip = true;
-  volatile long _counter;
-  volatile long _stopAfter;
-  volatile unsigned long _lastMillis = 0;
-
+  unsigned long _lastMillis = 0;
   bool _psmIntervalTimerInitialized = false;
   HardwareTimer* _psmIntervalTimer;
 };
